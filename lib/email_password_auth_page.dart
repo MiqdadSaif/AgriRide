@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'dart:async';
+import 'add_vehicle_page.dart';
 
 class EmailPasswordAuthPage extends StatefulWidget {
   const EmailPasswordAuthPage({super.key});
@@ -22,20 +25,107 @@ class _EmailPasswordAuthPageState extends State<EmailPasswordAuthPage> {
   User? _user;
   String? _passwordError;
   String? _selectedRole;
+  String? _currentUserRole;
 
   bool _isLoginView = true;
 
   bool _isPasswordObscured = true;
   bool _isConfirmPasswordObscured = true;
+  Timer? _verificationTimer;
+
+  @override
+  void dispose() {
+    _emailController.dispose();
+    _passwordController.dispose();
+    _confirmPasswordController.dispose();
+    _fullNameController.dispose();
+    _verificationTimer?.cancel();
+    super.dispose();
+  }
+
+  void _startVerificationCheck() {
+    _verificationTimer?.cancel();
+    _verificationTimer = Timer.periodic(const Duration(seconds: 3), (timer) async {
+      final user = _auth.currentUser;
+      if (user != null) {
+        await user.reload();
+        final currentUser = _auth.currentUser;
+        if (currentUser != null && currentUser.emailVerified) {
+          timer.cancel();
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text("Email verified! Welcome to AgriRent!"),
+                backgroundColor: Color(0xFF34D399),
+              ),
+            );
+            // Force a rebuild to trigger AuthWrapper navigation
+            setState(() {
+              _user = currentUser;
+            });
+          }
+        }
+      } else {
+        timer.cancel();
+      }
+    });
+  }
+
+  String? _validateUsername(String input)
+  {
+    if (input.isEmpty)
+    {
+      return 'Username cannot be empty.';
+    }
+    if (!RegExp(r'^[a-zA-Z0-9]+$').hasMatch(input))
+    {
+      return 'Username must be alphanumeric (A-Z, 0-9).';
+    }
+    return null;
+  }
+
+  bool _isValidEmail(String email)
+  {
+    final emailRegex = RegExp(r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$');
+    return emailRegex.hasMatch(email);
+  }
 
   @override
   void initState() {
     super.initState();
     
-    _auth.authStateChanges().listen((User? user) {
+    _auth.authStateChanges().listen((User? user) async {
+      if (user != null) {
+        // Check if email is verified
+        await user.reload();
+        final currentUser = _auth.currentUser;
+        
+        if (currentUser != null && !currentUser.emailVerified) {
+          // Don't sign out during signup process - let AuthWrapper handle it
+          // Only sign out if user is trying to access the app without verification
+          setState(() {
+            _user = currentUser;
+            _currentUserRole = null;
+          });
+          return;
+        }
+        
+        // If user is verified, load role (AuthWrapper will handle navigation)
+        if (currentUser != null && currentUser.emailVerified) {
+          await _loadUserRole(currentUser.uid);
+        }
+      }
+      
       setState(() {
         _user = user;
       });
+      if (user != null) {
+        _loadUserRole(user.uid);
+      } else {
+        setState(() {
+          _currentUserRole = null;
+        });
+      }
     });
 
     
@@ -45,7 +135,19 @@ class _EmailPasswordAuthPageState extends State<EmailPasswordAuthPage> {
           _passwordError = null;
         });
       }
-    });
+    });}
+
+  Future<void> _loadUserRole(String uid) async {
+    try {
+      final doc = await _firestore.collection('users').doc(uid).get();
+      setState(() {
+        _currentUserRole = doc.data()?['role'] as String?;
+      });
+    } catch (_) {
+      setState(() {
+        _currentUserRole = null;
+      });
+    }
   }
 
   
@@ -78,8 +180,32 @@ class _EmailPasswordAuthPageState extends State<EmailPasswordAuthPage> {
 
   Future<void> _signUp() async
    {
-    
-    final password = _passwordController.text;
+   final username = _fullNameController.text.trim();
+   final email = _emailController.text.trim();
+   final usernameError = _validateUsername(username);
+   if (usernameError != null)
+   {
+     ScaffoldMessenger.of(context).showSnackBar(
+       SnackBar(
+         content: Text(usernameError),
+         backgroundColor: Colors.red.shade400,
+       ),
+     );
+     return;
+   }
+
+   if (!_isValidEmail(email))
+   {
+     ScaffoldMessenger.of(context).showSnackBar(
+       SnackBar(
+         content: const Text('Please enter a valid email address.'),
+         backgroundColor: Colors.red.shade400,
+       ),
+     );
+     return;
+   }
+
+   final password = _passwordController.text;
     final validationError = _validatePassword(password);
     if (validationError != null) {
       ScaffoldMessenger.of(context).showSnackBar(// this line is used to show the message in screen 
@@ -117,19 +243,48 @@ class _EmailPasswordAuthPageState extends State<EmailPasswordAuthPage> {
     try 
     {
       final userCredential = await _auth.createUserWithEmailAndPassword(
-        email: _emailController.text.trim(),
+        email: email,
         password: _passwordController.text.trim(),
       );
       await userCredential.user?.updateDisplayName(
-        _fullNameController.text.trim(),
+        username,
       );
+
+      // Send email verification link
+      bool emailSent = false;
+      try {
+        await userCredential.user?.sendEmailVerification();
+        emailSent = true;
+      } catch (e) {
+        if (e.toString().contains('too-many-requests')) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Too many requests. Please wait a few minutes before trying again.'),
+                backgroundColor: Colors.orange,
+                duration: Duration(seconds: 5),
+              ),
+            );
+          }
+        } else {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('Failed to send verification email: $e'),
+                backgroundColor: Colors.red,
+              ),
+            );
+          }
+        }
+      }
 
       
       await _firestore.collection('users').doc(userCredential.user!.uid).set(
         {
-        'email': _emailController.text.trim(),
-        'displayName': _fullNameController.text.trim(),
-        'role': _selectedRole,
+        'email': email,
+        'displayName': username,
+        'role': _selectedRole!.toLowerCase(),
+        'emailVerified': false,
         'createdAt': FieldValue.serverTimestamp(),
       });
 
@@ -141,17 +296,57 @@ class _EmailPasswordAuthPageState extends State<EmailPasswordAuthPage> {
 
       if (mounted) 
       {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Account created successfully!")),
-        );
+        if (emailSent) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text("Account created! Verification email sent. Please check your inbox (including spam folder)."),
+              backgroundColor: Color(0xFF34D399),
+              duration: Duration(seconds: 5),
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text("Account created! Please try logging in to resend verification email."),
+              backgroundColor: Color(0xFF34D399),
+              duration: Duration(seconds: 5),
+            ),
+          );
+        }
       }
     } on FirebaseAuthException catch (e) 
     {
-      if (mounted) 
-      {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text("Sign Up Error: ${e.message}")));
+      String errorMessage;
+      Color errorColor = Colors.red;
+      
+      switch (e.code) {
+        case 'email-already-in-use':
+          errorMessage = 'An account already exists with this email address.';
+          break;
+        case 'weak-password':
+          errorMessage = 'Password is too weak. Please choose a stronger password.';
+          break;
+        case 'invalid-email':
+          errorMessage = 'Invalid email address format.';
+          break;
+        case 'operation-not-allowed':
+          errorMessage = 'Email/password accounts are not enabled.';
+          break;
+        case 'network-request-failed':
+          errorMessage = 'Network error. Please check your internet connection.';
+          break;
+        default:
+          errorMessage = 'Sign up failed: ${e.message ?? 'Unknown error occurred'}';
+      }
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(errorMessage),
+            backgroundColor: errorColor,
+            duration: const Duration(seconds: 4),
+          ),
+        );
       }
     } 
     finally
@@ -172,22 +367,103 @@ class _EmailPasswordAuthPageState extends State<EmailPasswordAuthPage> {
         email: _emailController.text.trim(),
         password: _passwordController.text.trim(),
       );
+      
+      // Check if email is verified
+      if (userCredential.user != null) {
+        await userCredential.user!.reload();
+        final currentUser = _auth.currentUser;
+        
+        if (currentUser != null && !currentUser.emailVerified) {
+          // Don't sign out - just show verification message and start checking
+          setState(() => _user = currentUser);
+          
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: const Text("Please verify your email address before logging in. Check your inbox (including spam folder)."),
+                backgroundColor: Colors.orange,
+                duration: const Duration(seconds: 5),
+                action: SnackBarAction(
+                  label: 'Resend',
+                  textColor: Colors.white,
+                  onPressed: () {
+                    _resendVerificationEmailForLogin();
+                  },
+                ),
+              ),
+            );
+          }
+          
+          // Start checking for verification every 3 seconds
+          _startVerificationCheck();
+          return;
+        }
+      }
+      
       setState(() => _user = userCredential.user);
       if (mounted) 
       {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(const SnackBar(content: Text("Login successful!")));
+        ).showSnackBar(const SnackBar(
+          content: Text("Login successful! Welcome back!"),
+          backgroundColor: Color(0xFF34D399),
+        ));
       }
     } 
     on FirebaseAuthException catch (e) 
     {
+      String errorMessage;
+      Color errorColor = Colors.red;
+      
+      switch (e.code) {
+        case 'user-not-found':
+          errorMessage = 'Email or password is wrong.';
+          break;
+        case 'wrong-password':
+          errorMessage = 'Email or password is wrong.';
+          break;
+        case 'invalid-email':
+          errorMessage = 'Invalid email address format.';
+          break;
+        case 'user-disabled':
+          errorMessage = 'This account has been disabled.';
+          break;
+        case 'too-many-requests':
+          errorMessage = 'Too many failed attempts. Please try again later.';
+          break;
+        case 'invalid-credential':
+          errorMessage = 'Email or password is wrong.';
+          break;
+        case 'network-request-failed':
+          errorMessage = 'Network error. Please check your internet connection.';
+          break;
+        default:
+          errorMessage = 'Email or password is wrong.';
+      }
+      
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text("Login Error: ${e.message}")));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(errorMessage),
+            backgroundColor: errorColor,
+            duration: const Duration(seconds: 4),
+          ),
+        );
       }
     } 
+    catch (e) 
+    {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('Email or password is wrong.'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
+    }
     finally 
     {
       if (mounted) 
@@ -222,10 +498,7 @@ class _EmailPasswordAuthPageState extends State<EmailPasswordAuthPage> {
             ? const CircularProgressIndicator(color: Color(0xFF34D399))
             : _user == null
             ? _buildAuthForm()
-            : _buildProfileView(),
-      ),
-    );
-  }
+            : _buildProfileView(),),);}
 
   
   Widget _buildAuthForm() 
@@ -251,10 +524,7 @@ class _EmailPasswordAuthPageState extends State<EmailPasswordAuthPage> {
           _buildToggleAuthMode(),
             
           const SizedBox(height: 40),
-        ],
-      ),
-    );
-  }
+        ],),);}
 
   
   Widget _buildLogo() {
@@ -276,11 +546,7 @@ class _EmailPasswordAuthPageState extends State<EmailPasswordAuthPage> {
               color: Colors.white,
               fontSize: 18,
               fontWeight: FontWeight.bold,
-            ),
-          ),
-      ],
-    );
-  }
+            ),),],);}
 
 
   Widget _buildLoginView() {
@@ -351,14 +617,17 @@ class _EmailPasswordAuthPageState extends State<EmailPasswordAuthPage> {
         const SizedBox(height: 30),
         _buildTextField(
           controller: _fullNameController,
-          label: 'Full Name',
+          label: 'Username (alphanumeric)',
           icon: Icons.person_outline,
+          inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z0-9]'))],
+          keyboardType: TextInputType.text,
         ),
         const SizedBox(height: 16),
         _buildTextField(
           controller: _emailController,
           label: 'Email',
           icon: Icons.email_outlined,
+          keyboardType: TextInputType.emailAddress,
         ),
         const SizedBox(height: 16),
         _buildPasswordField(
@@ -396,9 +665,13 @@ class _EmailPasswordAuthPageState extends State<EmailPasswordAuthPage> {
     required TextEditingController controller,
     required String label,
     required IconData icon,
+    List<TextInputFormatter>? inputFormatters,
+    TextInputType? keyboardType,
   }) {
     return TextField(
       controller: controller,
+      keyboardType: keyboardType,
+      inputFormatters: inputFormatters,
       style: const TextStyle(color: Colors.white),
       decoration: InputDecoration(
         labelText: label,
@@ -413,10 +686,7 @@ class _EmailPasswordAuthPageState extends State<EmailPasswordAuthPage> {
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
           borderSide: const BorderSide(color: Color(0xFF34D399)),
-        ),
-      ),
-    );
-  }
+        ),),); }
 
   
   Widget _buildPasswordField({
@@ -454,10 +724,7 @@ class _EmailPasswordAuthPageState extends State<EmailPasswordAuthPage> {
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
           borderSide: const BorderSide(color: Color(0xFF34D399)),
-        ),
-      ),
-    );
-  }
+        ),),);}
 
   
   Widget _buildAuthButton(String text, VoidCallback onPressed) {
@@ -475,9 +742,7 @@ class _EmailPasswordAuthPageState extends State<EmailPasswordAuthPage> {
           fontWeight: FontWeight.bold,
           color: Colors.black,
         ),
-      ),
-    );
-  }
+),);}
 
   
   Widget _buildToggleAuthMode() {
@@ -548,9 +813,7 @@ class _EmailPasswordAuthPageState extends State<EmailPasswordAuthPage> {
                   setState(() {
                     _selectedRole = 'Farmer';
                   });
-                },
-              ),
-            ),
+                },), ),
             const SizedBox(width: 12),
             Expanded(
               child: _buildRoleOption(
@@ -561,15 +824,7 @@ class _EmailPasswordAuthPageState extends State<EmailPasswordAuthPage> {
                 onTap: () {
                   setState(() {
                     _selectedRole = 'Owner';
-                  });
-                },
-              ),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
+                  });},),),],),],);}
 
   Widget _buildRoleOption({
     required IconData icon,
@@ -613,13 +868,7 @@ class _EmailPasswordAuthPageState extends State<EmailPasswordAuthPage> {
               style: TextStyle(
                 color: isSelected ? const Color(0xFF34D399).withOpacity(0.8) : Colors.grey,
                 fontSize: 12,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+              ),),],),),);}
 
   
   Widget _buildProfileView() {
@@ -643,7 +892,57 @@ class _EmailPasswordAuthPageState extends State<EmailPasswordAuthPage> {
             _user!.email ?? "No Email",
             style: const TextStyle(fontSize: 16, color: Colors.grey),
           ),
+          const SizedBox(height: 10),
+          // Email verification status
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                _user!.emailVerified ? Icons.verified : Icons.warning,
+                color: _user!.emailVerified ? Colors.green : Colors.orange,
+                size: 16,
+              ),
+              const SizedBox(width: 4),
+              Text(
+                _user!.emailVerified ? 'Email Verified' : 'Email Not Verified',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: _user!.emailVerified ? Colors.green : Colors.orange,
+                ),
+              ),
+            ],
+          ),
+          if (!_user!.emailVerified) ...[
+            const SizedBox(height: 10),
+            TextButton(
+              onPressed: _resendVerificationEmail,
+              child: const Text(
+                'Resend Verification Email',
+                style: TextStyle(color: Color(0xFF34D399)),
+              ),
+            ),
+          ],
           const SizedBox(height: 40),
+          if (_currentUserRole == 'Owner') ...[
+            ElevatedButton.icon(
+              onPressed: () async {
+                if (!mounted) return;
+                await Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const AddVehiclePage()),
+                );
+              },
+              icon: const Icon(Icons.add, color: Colors.black),
+              label: const Text(
+                'Add Vehicle',
+                style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF34D399),
+                padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 12),
+              ),
+            ),
+            const SizedBox(height: 16),
+          ],
           ElevatedButton(
             onPressed: _logout,
             style: ElevatedButton.styleFrom(
@@ -651,9 +950,76 @@ class _EmailPasswordAuthPageState extends State<EmailPasswordAuthPage> {
               padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 12),
             ),
             child: const Text("Logout", style: TextStyle(color: Colors.white)),
+          ),],),);}
+
+  Future<void> _resendVerificationEmail() async {
+    try {
+      await _user?.sendEmailVerification();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Verification email sent! Please check your inbox.'),
+            backgroundColor: Color(0xFF34D399),
           ),
-        ],
-      ),
-    );
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        if (e.toString().contains('too-many-requests')) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Too many requests. Please wait 1-2 hours before trying again.'),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 5),
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Failed to send verification email: $e'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      }
+    }
   }
-}
+
+  Future<void> _resendVerificationEmailForLogin() async {
+    try {
+      // Use the current user to send verification email
+      final currentUser = _auth.currentUser;
+      
+      if (currentUser != null) {
+        await currentUser.sendEmailVerification();
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Verification email sent! Please check your inbox (including spam folder).'),
+              backgroundColor: Color(0xFF34D399),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        if (e.toString().contains('too-many-requests')) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Too many requests. Please wait 1-2 hours before trying again.'),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 5),
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Failed to send verification email: $e'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      }
+    }
+  }}

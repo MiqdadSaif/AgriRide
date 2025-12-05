@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'email_password_auth_page.dart';
 import 'home_page.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
@@ -55,10 +54,14 @@ class MyApp extends StatelessWidget
 }
 
 
-class AuthWrapper extends StatelessWidget 
-{
+class AuthWrapper extends StatefulWidget {
   const AuthWrapper({super.key});
 
+  @override
+  State<AuthWrapper> createState() => _AuthWrapperState();
+}
+
+class _AuthWrapperState extends State<AuthWrapper> {
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<User?>(
@@ -67,21 +70,23 @@ class AuthWrapper extends StatelessWidget
         
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Scaffold(
-            body: Center
-            
-            (
+            body: Center(
               child: CircularProgressIndicator(color: Color(0xFF34D399)),
             ),
           );
         }
 
-        
-        if (snapshot.hasData) 
-        {
-          return const HomePage();
+        if (snapshot.hasData) {
+          final user = snapshot.data!;
+          // Check if email is verified
+          if (user.emailVerified) {
+            return const HomePage();
+          } else {
+            // User is not verified, show auth page
+            return const EmailPasswordAuthPage();
+          }
         }
 
-        
         return const EmailPasswordAuthPage();
       },
     );

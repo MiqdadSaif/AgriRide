@@ -4,6 +4,10 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'email_password_auth_page.dart';
 import 'profile_page.dart';
 import 'nearby_vehicles_page.dart';
+import 'add_vehicle_page.dart';
+import 'my_vehicles_page.dart';
+import 'owner_bookings_page.dart';
+import 'farmer_bookings_page.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -33,21 +37,31 @@ class _HomePageState extends State<HomePage> {
         final doc = await _firestore.collection('users').doc(user.uid).get();
         if (doc.exists) {
           setState(() {
-            _userRole = doc.data()?['role'] ?? 'Unknown';
+            final Object? raw = doc.data()?['role'];
+            final String? normalized = raw is String ? raw.toLowerCase() : null;
+            _userRole = normalized ?? 'unknown';
             _isLoading = false;
           });
         } else {
           setState(() {
-            _userRole = 'No role assigned';
+            _userRole = 'no role assigned';
             _isLoading = false;
           });
         }
       } catch (e) {
+        // If role fetch fails, avoid surfacing an error label to the user UI.
+        // Fall back to a neutral state and allow manual refresh.
+        debugPrint('Failed to load user role: $e');
         setState(() {
-          _userRole = 'Error loading role';
+          _userRole = 'no role assigned';
           _isLoading = false;
         });
       }
+    } else {
+      setState(() {
+        _userRole = null;
+        _isLoading = false;
+      });
     }
   }
 
@@ -76,6 +90,11 @@ class _HomePageState extends State<HomePage> {
           ),
         ),
         actions: [
+          IconButton(
+            onPressed: _loadUserRole,
+            tooltip: 'Refresh role',
+            icon: const Icon(Icons.refresh, color: Colors.white),
+          ),
           IconButton(
             onPressed: () {
               Navigator.of(context).push(
@@ -174,7 +193,7 @@ class _HomePageState extends State<HomePage> {
                                     ),
                                   ),
                                   Text(
-                                    _userRole ?? 'Unknown',
+                                    _displayRoleLabel(_userRole),
                                     style: TextStyle(
                                       fontSize: 16,
                                       fontWeight: FontWeight.bold,
@@ -223,6 +242,20 @@ class _HomePageState extends State<HomePage> {
             );
           },
         ),
+        const SizedBox(height: 16),
+        _buildActionCard(
+          icon: Icons.book_online,
+          title: 'My Bookings',
+          subtitle: 'View your booking status',
+          color: Colors.orange,
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (context) => const FarmerBookingsPage(),
+              ),
+            );
+          },
+        ),
       ],
     );
   }
@@ -236,7 +269,11 @@ class _HomePageState extends State<HomePage> {
           subtitle: 'List a new vehicle for rent',
           color: const Color(0xFF34D399),
           onTap: () {
-          
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (context) => const AddVehiclePage(),
+              ),
+            );
           },
         ),
         const SizedBox(height: 16),
@@ -246,18 +283,30 @@ class _HomePageState extends State<HomePage> {
           subtitle: 'Manage your listed vehicles',
           color: const Color(0xFF60A5FA),
           onTap: () {
-            
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (context) => const MyVehiclesPage(),
+              ),
+            );
           },
         ),
         const SizedBox(height: 16),
         _buildActionCard(
-          icon: Icons.analytics,
-          title: 'Analytics',
-          subtitle: 'View rental statistics and earnings',
-          color: const Color(0xFFF59E0B),
+          icon: Icons.book_online,
+          title: 'My Bookings',
+          subtitle: 'View and confirm booking requests',
+          color: Colors.orange,
           onTap: () {
-            
-          },),],);}
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (context) => const OwnerBookingsPage(),
+              ),
+            );
+          },
+        ),
+      ],
+    );
+  }
 
   Widget _buildDefaultContent() {
     return Center(
@@ -372,6 +421,19 @@ class _HomePageState extends State<HomePage> {
         return Icons.business;
       default:
         return Icons.person;
+    }
+  }
+
+  String _displayRoleLabel(String? role) {
+    switch (role?.toLowerCase()) {
+      case 'farmer':
+        return 'Farmer';
+      case 'owner':
+        return 'Owner';
+      case 'no role assigned':
+        return 'No role assigned';
+      default:
+        return 'Unknown';
     }
   }
 }

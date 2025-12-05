@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'home_page.dart';
 
 class ProfilePage extends StatelessWidget {
   const ProfilePage({super.key});
@@ -38,9 +39,7 @@ class ProfilePage extends StatelessWidget {
                   color: Colors.white,
                   fontSize: 22,
                   fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
+                ),),),
             const SizedBox(height: 6),
             Center(
               child: Text(
@@ -58,6 +57,30 @@ class ProfilePage extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 24),
+
+            // Go to Home (enabled only if email is verified)
+            ElevatedButton.icon(
+              onPressed: (user != null && user.emailVerified)
+                  ? () {
+                      Navigator.of(context).pushReplacement(
+                        MaterialPageRoute(builder: (_) => const HomePage()),
+                      );
+                    }
+                  : null,
+              icon: const Icon(Icons.home, color: Colors.black),
+              label: const Text(
+                'Go to Home',
+                style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF34D399),
+                disabledBackgroundColor: Colors.grey.shade800,
+                disabledForegroundColor: Colors.grey,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+            ),
+            const SizedBox(height: 16),
 
             ElevatedButton.icon(
               onPressed: () async {
@@ -77,12 +100,7 @@ class ProfilePage extends StatelessWidget {
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               ),
             ),
-          ],
-        ),
-      ),
-    );
-  }
-}
+          ],),),);}}
 
 class _ProfileSection extends StatelessWidget {
   final String title;
@@ -111,11 +129,8 @@ class _ProfileSection extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           ...children,
-        ],
-      ),
-    );
-  }
-}
+        ], ),
+    );}}
 
 class _ProfileTile extends StatelessWidget {
   final IconData icon;
@@ -141,10 +156,6 @@ class _ProfileTile extends StatelessWidget {
             value,
             style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w500),
           ),
-        ],
-      ),
-    );
-  }
-}
+        ],),);}}
 
 

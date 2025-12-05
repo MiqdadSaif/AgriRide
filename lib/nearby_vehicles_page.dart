@@ -2,6 +2,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'rent_now_page.dart';
 
 class NearbyVehiclesPage extends StatefulWidget {
   const NearbyVehiclesPage({super.key});
@@ -18,8 +19,8 @@ class _NearbyVehiclesPageState extends State<NearbyVehiclesPage> {
   List<_Vehicle> _vehicles = <_Vehicle>[];
 
   @override
-  void initState() 
-  {
+  void initState()
+   {
     super.initState();
     _initLocation();
   }
@@ -78,40 +79,91 @@ class _NearbyVehiclesPageState extends State<NearbyVehiclesPage> {
 
   Future<void> _loadVehiclesFromFirestore() async {
     try {
+      print('Loading vehicles from Firestore...');
+      
+      // Try to get all documents from the vehicles collection
       final QuerySnapshot<Map<String, dynamic>> snapshot =
           await _firestore.collection('vehicles').get();
 
-      final List<_Vehicle> loaded = snapshot.docs
-          .map((doc) => _Vehicle.fromDoc(doc))
-          .where((v) => v != null)
-          .cast<_Vehicle>()
-          .toList();
+      print('Snapshot has ${snapshot.docs.length} documents');
+      
+      if (snapshot.docs.isEmpty) {
+        print('No documents found in vehicles collection');
+        setState(() {
+          _vehicles = [];
+        });
+        return;
+      }
+      
+      final List<_Vehicle> loaded = [];
+      
+      for (var doc in snapshot.docs) {
+        print('Processing document ${doc.id}');
+        print('Document data: ${doc.data()}');
+        
+        final vehicle = _Vehicle.fromDoc(doc);
+        if (vehicle != null) {
+          loaded.add(vehicle);
+          print('Added vehicle: ${vehicle.description}');
+        } else {
+          print('Failed to parse vehicle from document ${doc.id}');
+        }
+      }
+
+      print('Successfully loaded ${loaded.length} vehicles out of ${snapshot.docs.length} documents');
+      for (var vehicle in loaded) {
+        print('Vehicle: ${vehicle.description}, Price: ${vehicle.pricePerHour}');
+      }
 
       setState(() {
         _vehicles = loaded;
       });
     } catch (e) {
+      print('Error loading vehicles: $e');
       setState(() {
         _errorMessage = 'Failed to load vehicles: $e';
       });
-    } }
+    }
+  }
 
   List<_VehicleWithDistance> _vehiclesSortedByDistance() {
-    if (_currentPosition == null) return <_VehicleWithDistance>[];
+    if (_currentPosition == null) {
+      // If no location, show all vehicles without distance sorting
+      return _vehicles
+          .map((v) => _VehicleWithDistance(
+                vehicle: v,
+                distanceKm: -1, // -1 indicates no distance available
+              ))
+          .toList();
+    }
+    
     final double userLat = _currentPosition!.latitude;
     final double userLng = _currentPosition!.longitude;
 
     final List<_VehicleWithDistance> withDistance = _vehicles
+        .where((v) => v.latitude != null && v.longitude != null)
         .map((v) => _VehicleWithDistance(
               vehicle: v,
               distanceKm: _haversineDistanceKm(
                 userLat,
                 userLng,
-                v.latitude,
-                v.longitude,
-              ), ))
+                v.latitude!,
+                v.longitude!,
+              ),
+            ))
         .toList();
+    
+    // Add vehicles without location at the end
+    final List<_VehicleWithDistance> withoutLocation = _vehicles
+        .where((v) => v.latitude == null || v.longitude == null)
+        .map((v) => _VehicleWithDistance(
+              vehicle: v,
+              distanceKm: -1,
+            ))
+        .toList();
+    
     withDistance.sort((a, b) => a.distanceKm.compareTo(b.distanceKm));
+    withDistance.addAll(withoutLocation);
     return withDistance;
   }
 
@@ -185,104 +237,420 @@ class _NearbyVehiclesPageState extends State<NearbyVehiclesPage> {
               child: const Text(
                 'Try Again',
                 style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
-              ),), ], ),),);  }
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   Widget _buildListView() {
     final List<_VehicleWithDistance> vehicles = _vehiclesSortedByDistance();
+    print('Building list view with ${vehicles.length} vehicles');
+    print('Raw vehicles list has ${_vehicles.length} items');
+    
     if (vehicles.isEmpty) {
-      return const Center(
-        child: Text(
-          'No vehicles found nearby.',
-          style: TextStyle(color: Colors.white70),
-        ),);}
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(
+              Icons.directions_car_outlined,
+              size: 64,
+              color: Colors.grey,
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'No vehicles available',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Check back later for available vehicles\nRaw count: ${_vehicles.length}',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.grey),
+            ),
+          ],
+        ),
+      );
+    }
     return ListView.separated(
       padding: const EdgeInsets.all(16),
       itemCount: vehicles.length,
-      separatorBuilder: (_, __) => const SizedBox(height: 12),
+      separatorBuilder: (_, __) => const SizedBox(height: 16),
       itemBuilder: (context, index) {
         final _VehicleWithDistance item = vehicles[index];
         final _Vehicle v = item.vehicle;
-        return Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: Colors.grey.shade900,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: Colors.grey.shade800),
+        return _buildVehicleCard(v, item.distanceKm);
+      },
+    );
+  }
+
+  Widget _buildVehicleCard(_Vehicle vehicle, double distanceKm) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.grey.shade900,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.grey.shade800),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Vehicle Image
+          ClipRRect(
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+            child: Container(
+              height: 200,
+              width: double.infinity,
+              color: Colors.grey.shade800,
+              child: vehicle.imageUrl != null
+                  ? Image.network(
+                      vehicle.imageUrl!,
+                      fit: BoxFit.cover,
+                      errorBuilder: (context, error, stackTrace) {
+                        return const Center(
+                          child: Icon(
+                            Icons.image_not_supported,
+                            size: 48,
+                            color: Colors.grey,
+                          ),
+                        );
+                      },
+                    )
+                  : const Center(
+                      child: Icon(
+                        Icons.directions_car_outlined,
+                        size: 48,
+                        color: Colors.grey,
+                      ),
+                    ),
+            ),
           ),
-          child: Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF34D399).withOpacity(0.15),
-                  borderRadius: BorderRadius.circular(12),
+          
+          // Vehicle Details
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Description
+                Text(
+                  vehicle.description,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
-                child: const Icon(Icons.agriculture, color: Color(0xFF34D399)),
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                if (vehicle.ownerName == 'Vehicle Owner') ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    'Category: ${_getCategoryFromDescription(vehicle.description)}',
+                    style: const TextStyle(
+                      color: Colors.grey,
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 8),
+                
+                // Price
+                Row(
                   children: [
+                    const Icon(
+                      Icons.attach_money,
+                      color: Color(0xFF34D399),
+                      size: 20,
+                    ),
+                    const SizedBox(width: 4),
                     Text(
-                      v.name,
+                      '₹${vehicle.pricePerHour.toStringAsFixed(2)} per hour',
                       style: const TextStyle(
-                        color: Colors.white,
+                        color: Color(0xFF34D399),
                         fontSize: 16,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
-                    const SizedBox(height: 4),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                
+                // Vehicle Status
+                Row(
+                  children: [
+                    Icon(
+                      vehicle.status == 'In Good Condition' 
+                          ? Icons.check_circle 
+                          : Icons.build,
+                      color: vehicle.status == 'In Good Condition' 
+                          ? const Color(0xFF34D399) 
+                          : Colors.orange,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 4),
                     Text(
-                      v.category,
-                      style: const TextStyle(color: Colors.grey, fontSize: 12),
+                      vehicle.status,
+                      style: TextStyle(
+                        color: vehicle.status == 'In Good Condition' 
+                            ? const Color(0xFF34D399) 
+                            : Colors.orange,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500,
+                      ),
                     ),
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Icon(Icons.place, size: 16, color: Colors.grey.shade400),
-                        const SizedBox(width: 6),
-                        Text(
-                          '${item.distanceKm.toStringAsFixed(2)} km away',
-                          style: const TextStyle(color: Colors.white70),
-                        ),],), ], ), ),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Text(
-                    '₹${v.hourlyRate}/hr',
-                    style: const TextStyle(
-                      color: Color(0xFF34D399),
-               fontWeight: FontWeight.bold,
+                  ],
+                ),
+                const SizedBox(height: 8),
+                
+                // Owner Info
+                Row(
+                  children: [
+                    const Icon(
+                      Icons.person,
+                      color: Colors.grey,
+                      size: 16,
                     ),
+                    const SizedBox(width: 4),
+                    Text(
+                      'Owner: ${vehicle.ownerName}',
+                      style: const TextStyle(
+                        color: Colors.grey,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                
+                // Driver Info
+                if (vehicle.driver != null) ...[
+                  Row(
+                    children: [
+                      const Icon(
+                        Icons.drive_eta,
+                        color: Colors.grey,
+                        size: 16,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        'Driver: ${vehicle.driver!['name'] ?? 'N/A'}',
+                        style: const TextStyle(
+                          color: Colors.grey,
+                          fontSize: 14,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      const Icon(
+                        Icons.phone,
+                        color: Colors.grey,
+                        size: 16,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        vehicle.driver!['phone'] ?? 'N/A',
+                        style: const TextStyle(
+                          color: Colors.grey,
+                          fontSize: 14,
+                        ),
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 8),
-                  TextButton(
-                    onPressed: () {},
-                    child: const Text('View', style: TextStyle(color: Colors.white70)),
-                  ),],),],),); }, );}}
+                ],
+                
+                // Location
+                Row(
+                  children: [
+                    const Icon(
+                      Icons.location_on,
+                      color: Colors.grey,
+                      size: 16,
+                    ),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        vehicle.locationText ?? 
+                        (distanceKm >= 0 
+                          ? '${distanceKm.toStringAsFixed(2)} km away'
+                          : 'Location not available'),
+                        style: const TextStyle(
+                          color: Colors.grey,
+                          fontSize: 14,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                
+                // Action Buttons
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => _contactOwner(vehicle),
+                        style: OutlinedButton.styleFrom(
+                          side: const BorderSide(color: Color(0xFF34D399)),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                        ),
+                        child: const Text(
+                          'Contact Owner',
+                          style: TextStyle(color: Color(0xFF34D399)),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: () => _rentVehicle(vehicle),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF34D399),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                        ),
+                        child: const Text(
+                          'Rent Now',
+                          style: TextStyle(color: Colors.black),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _contactOwner(_Vehicle vehicle) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: Colors.grey.shade900,
+        title: const Text(
+          'Contact Owner',
+          style: TextStyle(color: Colors.white),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Owner: ${vehicle.ownerName}',
+              style: const TextStyle(color: Colors.white, fontSize: 16),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Email: ${vehicle.ownerEmail}',
+              style: const TextStyle(color: Colors.grey),
+            ),
+            if (vehicle.driver != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Driver: ${vehicle.driver!['name'] ?? 'N/A'}',
+                style: const TextStyle(color: Colors.grey),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Phone: ${vehicle.driver!['phone'] ?? 'N/A'}',
+                style: const TextStyle(color: Colors.grey),
+              ),
+            ],
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text(
+              'Close',
+              style: TextStyle(color: Colors.grey),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _rentVehicle(_Vehicle vehicle) async {
+    final bool? placed = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (context) => RentNowPage(
+          vehicleId: vehicle.id,
+          vehicleDescription: vehicle.description,
+          pricePerHour: vehicle.pricePerHour,
+        ),
+      ),
+    );
+    if (placed == true && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Request placed for ${vehicle.description}'),
+          backgroundColor: const Color(0xFF34D399),
+        ),
+      );
+    }
+  }
+
+  String _getCategoryFromDescription(String description) {
+    if (description.toLowerCase().contains('tractor')) return 'Tractor';
+    if (description.toLowerCase().contains('tiller')) return 'Tiller';
+    if (description.toLowerCase().contains('harvester')) return 'Harvester';
+    if (description.toLowerCase().contains('sprayer')) return 'Sprayer';
+    return 'Agricultural Equipment';
+  }
+}
 
 class _Vehicle {
   final String id;
-  final String name;
-  final String category;
-  final int hourlyRate;
-  final double latitude;
-  final double longitude;
+  final String description;
+  final double pricePerHour;
+  final String? imageUrl;
+  final String ownerName;
+  final String ownerEmail;
+  final Map<String, dynamic>? driver;
+  final String? locationText;
+  final double? latitude;
+  final double? longitude;
+  final String status;
 
   const _Vehicle({
     required this.id,
-    required this.name,
-    required this.category,
-    required this.hourlyRate,
-    required this.latitude,
-    required this.longitude,
+    required this.description,
+    required this.pricePerHour,
+    this.imageUrl,
+    required this.ownerName,
+    required this.ownerEmail,
+    this.driver,
+    this.locationText,
+    this.latitude,
+    this.longitude,
+    this.status = 'In Good Condition',
   });
 
   static _Vehicle? fromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
     try {
       final Map<String, dynamic>? data = doc.data();
-      if (data == null) return null;
+      if (data == null) {
+        print('Document ${doc.id} has no data');
+        return null;
+      }
+      
+      print('Parsing vehicle data for ${doc.id}: $data');
+      
       final Map<String, dynamic>? location =
           (data['location'] as Map<String, dynamic>?);
       final double? lat = (location?['latitude']) is num
@@ -291,16 +659,57 @@ class _Vehicle {
       final double? lng = (location?['longitude']) is num
           ? (location?['longitude'] as num).toDouble()
           : null;
-      if (lat == null || lng == null) return null;
-      return _Vehicle(
+      
+      // Handle both old and new data structures
+      String description;
+      double pricePerHour;
+      String ownerName;
+      String ownerEmail;
+      String? imageUrl;
+      Map<String, dynamic>? driver;
+      String? locationText;
+      
+      // Check if it's the new structure (from add_vehicle_page.dart)
+      if (data.containsKey('description')) {
+        description = (data['description'] ?? 'No description') as String;
+        pricePerHour = ((data['pricePerHour'] ?? 0) as num).toDouble();
+        ownerName = (data['ownerName'] ?? 'Unknown Owner') as String;
+        ownerEmail = (data['ownerEmail'] ?? '') as String;
+        imageUrl = data['imageUrl'] as String?;
+        driver = data['driver'] as Map<String, dynamic>?;
+        locationText = data['locationText'] as String?;
+      } else {
+        // Handle old structure (from your existing data)
+        description = (data['name'] ?? 'No description') as String;
+        pricePerHour = ((data['hourlyRate'] ?? 0) as num).toDouble();
+        ownerName = 'Vehicle Owner'; // Default for old data
+        ownerEmail = 'contact@example.com'; // Default for old data
+        imageUrl = null; // Old data doesn't have images
+        driver = null; // Old data doesn't have driver info
+        locationText = null; // Old data doesn't have location text
+      }
+      
+      // Get vehicle status (default to 'In Good Condition' for old data)
+      final String status = (data['status'] ?? 'In Good Condition') as String;
+      
+      final vehicle = _Vehicle(
         id: doc.id,
-        name: (data['name'] ?? 'Vehicle') as String,
-        category: (data['category'] ?? 'General') as String,
-        hourlyRate: ((data['hourlyRate'] ?? 0) as num).toInt(),
+        description: description,
+        pricePerHour: pricePerHour,
+        imageUrl: imageUrl,
+        ownerName: ownerName,
+        ownerEmail: ownerEmail,
+        driver: driver,
+        locationText: locationText,
         latitude: lat,
         longitude: lng,
+        status: status,
       );
-    } catch (_) {
+      
+      print('Successfully parsed vehicle: ${vehicle.description}');
+      return vehicle;
+    } catch (e) {
+      print('Error parsing vehicle data for ${doc.id}: $e');
       return null;
     }
   }
@@ -313,6 +722,7 @@ class _VehicleWithDistance {
   const _VehicleWithDistance({
     required this.vehicle,
     required this.distanceKm,
-  });}
+  });
+}
 
 
